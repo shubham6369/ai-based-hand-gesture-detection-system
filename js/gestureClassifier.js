@@ -2,21 +2,19 @@
  * gestureClassifier.js
  * ────────────────────
  * Analyses the 21 MediaPipe hand landmarks to determine which of the
- * 10 supported gestures is being performed.
+ * 9 supported gestures is being performed with high precision and
+ * strict, mutually exclusive decision boundaries to eliminate confusion.
  *
- * The classifier works in three stages:
- *   1.  Compute per-finger "extended" state using landmark distances.
- *   2.  Determine thumb direction (up / down / neutral).
- *   3.  Match the finger state pattern against known gesture templates,
- *       scoring each match to produce a confidence value.
- *
- * Landmark indices used:
- *   WRIST = 0
- *   THUMB:  CMC=1, MCP=2, IP=3,  TIP=4
- *   INDEX:  MCP=5, PIP=6, DIP=7, TIP=8
- *   MIDDLE: MCP=9, PIP=10,DIP=11,TIP=12
- *   RING:   MCP=13,PIP=14,DIP=15,TIP=16
- *   PINKY:  MCP=17,PIP=18,DIP=19,TIP=20
+ * Supported gestures:
+ *   1. thumbs_up      - "Okay"
+ *   2. thumbs_down    - "No"
+ *   3. peace          - "Victory"
+ *   4. ok_sign        - "Good"
+ *   5. open_palm      - "Stop"
+ *   6. wave           - "Hello"
+ *   7. call_me        - "Call Me"
+ *   8. one_finger     - "Wait"
+ *   9. crossed_fingers- "Good Luck"
  */
 
 /* ─── Landmark index constants ─────────────────────────── */
@@ -58,169 +56,225 @@ function angleDeg(a, b, c) {
   return (Math.acos(cosAngle) * 180) / Math.PI;
 }
 
-/* ─── Finger state analysis ────────────────────────────── */
+/* ─── Finger State Analysis ────────────────────────────── */
 
 /**
- * Determine whether each finger is extended.
- * For the four fingers (index, middle, ring, pinky) a finger is
- * considered extended when its TIP is farther from the WRIST than
- * its PIP, AND the PIP-DIP-TIP chain is relatively straight.
- *
- * The thumb uses a different heuristic: it is extended when its TIP
- * is farther from the INDEX_MCP than its IP joint.
- *
- * @param {Array} lm – array of 21 landmarks {x, y, z}
- * @param {string} handedness – "Left" or "Right"
- * @returns {{ thumb, index, middle, ring, pinky }} each a number 0..1
+ * Returns comprehensive geometric measurements for each finger:
+ * extension (0 or 1), curl angle, tip-to-MCP distance, etc.
  */
-function getFingerStates(lm, handedness) {
+function analyzeFingers(lm) {
   const wrist = lm[LM.WRIST];
+  const palmSize = Math.max(0.01, dist2d(wrist, lm[LM.MIDDLE_MCP]));
 
-  // ── Thumb ────────────────────────────────────────────
-  // Thumb extended: TIP far from palm centre (INDEX_MCP).
+  // ── Thumb ─────────────────────────────────────────────
   const thumbTipDist = dist(lm[LM.THUMB_TIP], lm[LM.INDEX_MCP]);
   const thumbIpDist = dist(lm[LM.THUMB_IP], lm[LM.INDEX_MCP]);
   const thumbMcpDist = dist(lm[LM.THUMB_MCP], lm[LM.INDEX_MCP]);
-  const thumbExtended = thumbTipDist > thumbIpDist ? 1 : 0;
-
-  // Also check thumb curl angle
   const thumbAngle = angleDeg(lm[LM.THUMB_MCP], lm[LM.THUMB_IP], lm[LM.THUMB_TIP]);
+  const thumbExtended = (thumbTipDist > thumbIpDist * 1.15 && thumbTipDist > thumbMcpDist) ? 1 : 0;
 
-  // ── Fingers (index / middle / ring / pinky) ──────────
-  const fingerDefs = [
-    { mcp: LM.INDEX_MCP, pip: LM.INDEX_PIP, dip: LM.INDEX_DIP, tip: LM.INDEX_TIP },
-    { mcp: LM.MIDDLE_MCP, pip: LM.MIDDLE_PIP, dip: LM.MIDDLE_DIP, tip: LM.MIDDLE_TIP },
-    { mcp: LM.RING_MCP, pip: LM.RING_PIP, dip: LM.RING_DIP, tip: LM.RING_TIP },
-    { mcp: LM.PINKY_MCP, pip: LM.PINKY_PIP, dip: LM.PINKY_DIP, tip: LM.PINKY_TIP },
+  // ── 4 Fingers ─────────────────────────────────────────
+  const fingers = [
+    { name: "index",  mcp: LM.INDEX_MCP,  pip: LM.INDEX_PIP,  dip: LM.INDEX_DIP,  tip: LM.INDEX_TIP },
+    { name: "middle", mcp: LM.MIDDLE_MCP, pip: LM.MIDDLE_PIP, dip: LM.MIDDLE_DIP, tip: LM.MIDDLE_TIP },
+    { name: "ring",   mcp: LM.RING_MCP,   pip: LM.RING_PIP,   dip: LM.RING_DIP,   tip: LM.RING_TIP },
+    { name: "pinky",  mcp: LM.PINKY_MCP,  pip: LM.PINKY_PIP,  dip: LM.PINKY_DIP,  tip: LM.PINKY_TIP },
   ];
 
-  const fingerStates = fingerDefs.map((f) => {
-    const tipDist = dist(lm[f.tip], wrist);
-    const pipDist = dist(lm[f.pip], wrist);
-    // Finger curl angle at PIP joint
-    const curlAngle = angleDeg(lm[f.mcp], lm[f.pip], lm[f.tip]);
-    // A finger is extended if tip is farther from wrist than pip
-    // AND the PIP angle is relatively open (> ~140°)
-    const isExtended = tipDist > pipDist && curlAngle > 140;
-    return isExtended ? 1 : 0;
+  const state = {
+    palmSize,
+    thumb: thumbExtended,
+    thumbAngle,
+    thumbTip: lm[LM.THUMB_TIP],
+    thumbMcp: lm[LM.THUMB_MCP],
+    wrist,
+  };
+
+  fingers.forEach((f) => {
+    const tipDistWrist = dist(lm[f.tip], wrist);
+    const pipDistWrist = dist(lm[f.pip], wrist);
+    const pipAngle = angleDeg(lm[f.mcp], lm[f.pip], lm[f.tip]);
+    const tipToMcp = dist(lm[f.tip], lm[f.mcp]);
+
+    // Definite extension: tip farther from wrist than PIP AND knuckle angle > 138°
+    const isExt = (tipDistWrist > pipDistWrist && pipAngle > 138 && tipToMcp > palmSize * 0.6) ? 1 : 0;
+    // Definite curl: knuckle angle < 125° OR tip-to-MCP small
+    const isCurl = (pipAngle < 125 || tipToMcp < palmSize * 0.5) ? 1 : 0;
+
+    state[f.name] = isExt;
+    state[`${f.name}Angle`] = pipAngle;
+    state[`${f.name}TipToMcp`] = tipToMcp;
+    state[`${f.name}Curled`] = isCurl;
   });
 
-  return {
-    thumb: thumbExtended,
-    index: fingerStates[0],
-    middle: fingerStates[1],
-    ring: fingerStates[2],
-    pinky: fingerStates[3],
-    // Extra data for specialised checks
-    _thumbAngle: thumbAngle,
-    _thumbTipY: lm[LM.THUMB_TIP].y,
-    _wristY: wrist.y,
-    _thumbTipX: lm[LM.THUMB_TIP].x,
-    _wristX: wrist.x,
-  };
+  return state;
 }
 
-/**
- * Determine thumb direction: "up", "down", or "neutral".
- * In MediaPipe's normalised coordinate space y increases downward,
- * so thumb_tip.y < wrist.y means the thumb points upward.
- */
-function getThumbDirection(lm) {
-  const wrist = lm[LM.WRIST];
-  const thumbTip = lm[LM.THUMB_TIP];
-  const thumbCmc = lm[LM.THUMB_CMC];
-  const dy = thumbTip.y - wrist.y;
-  // Threshold: require significant vertical displacement
-  const threshold = 0.08;
-  if (dy < -threshold) return "up";
-  if (dy > threshold) return "down";
-  return "neutral";
-}
+/* ─── Wave Motion Tracker ──────────────────────────────── */
 
-/* ─── OK-sign specific check ───────────────────────────── */
-
-/**
- * The OK sign is formed when the thumb tip and index tip are close
- * together forming a circle while the remaining fingers are extended.
- */
-function isOKSign(lm, fs) {
-  const thumbIndexDist = dist2d(lm[LM.THUMB_TIP], lm[LM.INDEX_TIP]);
-  const palmSize = dist2d(lm[LM.WRIST], lm[LM.MIDDLE_MCP]);
-  // Thumb and index tips within ~25% of palm size
-  const circleFormed = thumbIndexDist < palmSize * 0.3;
-  // Other three fingers should be relatively extended
-  const othersExtended = fs.middle + fs.ring + fs.pinky >= 2;
-  return circleFormed && othersExtended;
-}
-
-/* ─── Crossed-fingers specific check ───────────────────── */
-
-/**
- * Crossed fingers: index and middle are extended and their tips are
- * very close (overlapping).  Other fingers curled.
- */
-function isCrossedFingers(lm, fs) {
-  // Both index and middle extended
-  if (!fs.index || !fs.middle) return false;
-  // Ring and pinky curled
-  if (fs.ring || fs.pinky) return false;
-  // Index and middle tips close together
-  const tipDist = dist2d(lm[LM.INDEX_TIP], lm[LM.MIDDLE_TIP]);
-  const palmSize = dist2d(lm[LM.WRIST], lm[LM.MIDDLE_MCP]);
-  // Also check that the DIP joints are close (crossing)
-  const dipDist = dist2d(lm[LM.INDEX_DIP], lm[LM.MIDDLE_DIP]);
-  return tipDist < palmSize * 0.2 && dipDist < palmSize * 0.2;
-}
-
-/* ─── Wave detection (motion-based) ────────────────────── */
-
-// We keep a short history of wrist x-positions to detect lateral motion.
 const wristHistory = [];
-const WAVE_HISTORY_LENGTH = 15;
-const WAVE_THRESHOLD = 0.04; // minimum x-range to count as waving
+const WAVE_MAX_HISTORY = 18;
 
 /**
- * Returns true if the hand is performing a waving motion.
- * A wave is detected when the wrist has moved back-and-forth
- * laterally across several recent frames with all fingers extended.
+ * Robust wave detection: requires high-amplitude lateral velocity
+ * and clear direction oscillations, strictly rejecting stationary hands.
  */
-function isWaving(lm, fs) {
-  const allExtended = fs.thumb + fs.index + fs.middle + fs.ring + fs.pinky >= 4;
-  if (!allExtended) {
+function checkWavingMotion(lm, isAllExtended) {
+  if (!isAllExtended) {
     wristHistory.length = 0;
     return false;
   }
 
-  wristHistory.push(lm[LM.WRIST].x);
-  if (wristHistory.length > WAVE_HISTORY_LENGTH) wristHistory.shift();
+  const currentX = lm[LM.WRIST].x;
+  wristHistory.push({ x: currentX, t: Date.now() });
+  if (wristHistory.length > WAVE_MAX_HISTORY) wristHistory.shift();
 
-  if (wristHistory.length < 8) return false;
+  if (wristHistory.length < 10) return false;
 
-  // Count direction changes
-  let dirChanges = 0;
+  // 1. Peak-to-peak amplitude must be substantial (> 7% of screen width)
+  const xVals = wristHistory.map((p) => p.x);
+  const minX = Math.min(...xVals);
+  const maxX = Math.max(...xVals);
+  const totalRange = maxX - minX;
+  if (totalRange < 0.07) return false;
+
+  // 2. Count distinct velocity reversals with minimum step threshold
+  let reversals = 0;
   for (let i = 2; i < wristHistory.length; i++) {
-    const prev = wristHistory[i - 1] - wristHistory[i - 2];
-    const curr = wristHistory[i] - wristHistory[i - 1];
-    if ((prev > 0.002 && curr < -0.002) || (prev < -0.002 && curr > 0.002)) {
-      dirChanges++;
+    const dx1 = wristHistory[i - 1].x - wristHistory[i - 2].x;
+    const dx2 = wristHistory[i].x - wristHistory[i - 1].x;
+    // Significant sweep velocity required (filters micro-jitter)
+    if (Math.abs(dx1) > 0.005 && Math.abs(dx2) > 0.005) {
+      if ((dx1 > 0 && dx2 < 0) || (dx1 < 0 && dx2 > 0)) {
+        reversals++;
+      }
     }
   }
 
-  // A wave has at least 2 direction changes
-  const xMin = Math.min(...wristHistory);
-  const xMax = Math.max(...wristHistory);
-  const xRange = xMax - xMin;
-
-  return dirChanges >= 2 && xRange > WAVE_THRESHOLD;
+  return reversals >= 2;
 }
 
-/* ─── Main classifier ─────────────────────────────────── */
+/* ─── Specialized Gesture Tests ────────────────────────── */
 
 /**
- * Classify a single hand's landmarks into one of the 10 supported gestures.
+ * OK Sign (👌 - "Good"):
+ * Index finger forms a loop with thumb tip while middle, ring, pinky remain extended.
+ * CRITICAL FIX: Explicitly checks that index finger is BENT/CURLED,
+ * which completely prevents false positives when showing an Open Palm!
+ */
+function isOKSign(lm, s) {
+  const thumbIndexDist = dist2d(lm[LM.THUMB_TIP], lm[LM.INDEX_TIP]);
+  // Contact threshold: tips must be close together
+  const circleFormed = thumbIndexDist < s.palmSize * 0.22;
+
+  // In an OK sign, index finger is distinctly curved/bent (NOT straight like in open palm)
+  const indexCurved = s.indexAngle < 155 || s.indexTipToMcp < s.middleTipToMcp * 0.85;
+
+  // Remaining three fingers must be extended
+  const othersExtended = (s.middle + s.ring + s.pinky) >= 2;
+
+  return circleFormed && indexCurved && othersExtended;
+}
+
+/**
+ * Crossed Fingers (🤞 - "Good Luck"):
+ * Index and middle fingers are extended and cross/overlap over each other,
+ * while ring and pinky are curled.
+ */
+function isCrossedFingers(lm, s) {
+  if (!s.index || !s.middle) return false;
+  if (s.ring || s.pinky) return false;
+
+  const tipDist = dist2d(lm[LM.INDEX_TIP], lm[LM.MIDDLE_TIP]);
+  const dipDist = dist2d(lm[LM.INDEX_DIP], lm[LM.MIDDLE_DIP]);
+
+  // Index and middle tips and DIP joints must be touching or overlapping
+  const closeOverlap = tipDist < s.palmSize * 0.18 && dipDist < s.palmSize * 0.18;
+
+  // Tips should not be spread like a V
+  return closeOverlap;
+}
+
+/**
+ * Peace / V Sign (✌️ - "Victory"):
+ * Index and middle fingers extended with a CLEAR separation/gap between them.
+ * Ring and pinky are curled.
+ * CRITICAL FIX: Requires clear V-spread distance so it NEVER collides with Crossed Fingers!
+ */
+function isPeaceSign(lm, s) {
+  if (!s.index || !s.middle) return false;
+  if (s.ring || s.pinky) return false;
+
+  const tipDist = dist2d(lm[LM.INDEX_TIP], lm[LM.MIDDLE_TIP]);
+
+  // V-separation threshold: distance between tips must be clearly open (> 24% of palm)
+  const isSeparated = tipDist >= s.palmSize * 0.24;
+
+  return isSeparated;
+}
+
+/**
+ * One Finger Up (☝️ - "Wait"):
+ * Only index finger is extended upward. Middle, ring, pinky are curled.
+ * CRITICAL FIX: Checks relative length to avoid flickering with Peace sign when middle is half-curled.
+ */
+function isOneFinger(lm, s) {
+  if (!s.index) return false;
+  if (s.ring || s.pinky) return false;
+
+  // Middle finger must be definitely curled
+  const middleIsCurled = s.middleCurled || s.middleAngle < 130;
+  // Index finger must project clearly past the middle finger
+  const indexDominates = s.indexTipToMcp > s.middleTipToMcp * 1.3;
+
+  return middleIsCurled && indexDominates;
+}
+
+/**
+ * Thumbs Up (👍 - "Okay"):
+ * Thumb points straight up, all 4 fingers firmly curled into fist.
+ */
+function isThumbsUp(lm, s) {
+  const fourCurled = s.indexCurvedOrCurl(s) && s.ringCurled && s.pinkyCurled;
+  const thumbUp = (s.thumbTip.y < s.thumbMcp.y - 0.035) && (s.thumbTip.y < s.wrist.y - 0.06);
+  return s.thumb && fourCurled && thumbUp;
+}
+
+/**
+ * Thumbs Down (👎 - "No"):
+ * Thumb points straight down, all 4 fingers firmly curled into fist.
+ */
+function isThumbsDown(lm, s) {
+  const fourCurled = s.indexCurvedOrCurl(s) && s.ringCurled && s.pinkyCurled;
+  const thumbDown = (s.thumbTip.y > s.thumbMcp.y + 0.035) && (s.thumbTip.y > s.wrist.y + 0.03);
+  return s.thumb && fourCurled && thumbDown;
+}
+
+/**
+ * Call Me (🤙 - "Call Me"):
+ * Thumb and pinky extended, middle 3 fingers firmly curled.
+ */
+function isCallMe(lm, s) {
+  if (!s.thumb || !s.pinky) return false;
+  if (s.middle || s.ring) return false;
+
+  // Index must also be curled
+  const indexCurled = s.indexAngle < 130 || s.indexTipToMcp < s.palmSize * 0.55;
+  // Wide telephone spread between thumb and pinky
+  const spreadDist = dist2d(s.thumbTip, lm[LM.PINKY_TIP]);
+  const wideSpread = spreadDist > s.palmSize * 0.65;
+
+  return indexCurled && wideSpread;
+}
+
+/* ─── Main Classifier ─────────────────────────────────── */
+
+/**
+ * Classify a hand's 21 landmarks into one of the 9 supported gestures.
+ * Uses priority ordering with disjoint geometric thresholds.
  *
- * @param {Array} landmarks – 21 landmarks from MediaPipe
- * @param {string} handedness – "Left" or "Right"
+ * @param {Array} landmarks - 21 landmarks from MediaPipe
+ * @param {string} handedness - "Left" or "Right"
  * @returns {{ gesture: string|null, confidence: number }}
  */
 export function classifyGesture(landmarks, handedness = "Right") {
@@ -229,60 +283,59 @@ export function classifyGesture(landmarks, handedness = "Right") {
   }
 
   const lm = landmarks;
-  const fs = getFingerStates(lm, handedness);
-  const thumbDir = getThumbDirection(lm);
+  const s = analyzeFingers(lm);
 
-  // Count how many fingers are extended (excluding thumb)
-  const extendedCount = fs.index + fs.middle + fs.ring + fs.pinky;
-  const allExtended = extendedCount >= 4;
-  const allCurled = extendedCount === 0;
+  // Helper for 4 curled fingers
+  s.indexCurvedOrCurl = () => (s.indexCurled || s.indexAngle < 130);
 
-  // ── 1. OK Sign (check first – specific shape) ───────
-  if (isOKSign(lm, fs)) {
-    return { gesture: "ok_sign", confidence: 0.88 };
+  const extendedCount = s.index + s.middle + s.ring + s.pinky;
+  const isAllExtended = extendedCount >= 4 && s.thumb;
+
+  // ── 1. Call Me (Thumb + Pinky only, highly unique) ──
+  if (isCallMe(lm, s)) {
+    return { gesture: "call_me", confidence: 0.91 };
   }
 
-  // ── 2. Crossed Fingers ──────────────────────────────
-  if (isCrossedFingers(lm, fs)) {
-    return { gesture: "crossed_fingers", confidence: 0.82 };
+  // ── 2. OK Sign (Circle formed with curled index, 3 extended) ──
+  if (isOKSign(lm, s)) {
+    return { gesture: "ok_sign", confidence: 0.92 };
   }
 
-  // ── 3. Thumbs Up ────────────────────────────────────
-  if (fs.thumb && allCurled && thumbDir === "up") {
-    return { gesture: "thumbs_up", confidence: 0.92 };
+  // ── 3. Crossed Fingers (Index + Middle overlapping) ──
+  if (isCrossedFingers(lm, s)) {
+    return { gesture: "crossed_fingers", confidence: 0.89 };
   }
 
-  // ── 4. Thumbs Down ─────────────────────────────────
-  if (fs.thumb && allCurled && thumbDir === "down") {
-    return { gesture: "thumbs_down", confidence: 0.90 };
+  // ── 4. Peace / V Sign (Index + Middle clearly separated) ──
+  if (isPeaceSign(lm, s)) {
+    return { gesture: "peace", confidence: 0.92 };
   }
 
-  // ── 5. Waving Hand (motion + open palm) ────────────
-  if (isWaving(lm, fs)) {
-    return { gesture: "wave", confidence: 0.80 };
+  // ── 5. One Finger Up (Only Index extended) ──────────
+  if (isOneFinger(lm, s)) {
+    return { gesture: "one_finger", confidence: 0.91 };
   }
 
-  // ── 6. Open Palm (all fingers extended, no wave) ───
-  if (allExtended && fs.thumb) {
-    return { gesture: "open_palm", confidence: 0.90 };
+  // ── 6. Thumbs Up (Thumb up, 4 fingers curled) ───────
+  if (isThumbsUp(lm, s)) {
+    return { gesture: "thumbs_up", confidence: 0.93 };
   }
 
-  // ── 7. Peace / V Sign ─────────────────────────────
-  if (fs.index && fs.middle && !fs.ring && !fs.pinky) {
-    // Ensure they're not crossed (already handled above)
-    return { gesture: "peace", confidence: 0.88 };
+  // ── 7. Thumbs Down (Thumb down, 4 fingers curled) ───
+  if (isThumbsDown(lm, s)) {
+    return { gesture: "thumbs_down", confidence: 0.92 };
   }
 
-  // ── 8. Call Me (thumb + pinky extended) ───────────
-  if (fs.thumb && fs.pinky && !fs.index && !fs.middle && !fs.ring) {
-    return { gesture: "call_me", confidence: 0.87 };
+  // ── 8. Waving Hand (Open palm + high-velocity oscillation) ──
+  if (isAllExtended && checkWavingMotion(lm, true)) {
+    return { gesture: "wave", confidence: 0.88 };
   }
 
-  // ── 9. One Finger Up (only index extended) ────────
-  if (fs.index && !fs.middle && !fs.ring && !fs.pinky) {
-    return { gesture: "one_finger", confidence: 0.89 };
+  // ── 9. Open Palm (All 5 extended, stationary) ───────
+  if (isAllExtended) {
+    return { gesture: "open_palm", confidence: 0.94 };
   }
 
-  // ── No match ─────────────────────────────────────
+  // No confident match
   return { gesture: null, confidence: 0 };
 }

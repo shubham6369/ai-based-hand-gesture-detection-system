@@ -27,19 +27,25 @@ let detecting = false;
 let animFrameId = null;
 
 /* ─── Smoothing buffer ─────────────────────────────────── */
-// Keep a short buffer of the last N classifications to smooth
-// out flickering / transient mis-classifications.
+// Keep a buffer of recent classifications with hysteresis locking
+// to eliminate jumping between two boundary gestures.
 
-const SMOOTH_WINDOW = 5;
+const SMOOTH_WINDOW = 7;
 const gestureBuffer = [];
+let currentLockedGesture = null;
 
 /**
- * Returns the most-frequently-occurring gesture in the buffer
- * along with a smoothed confidence.
+ * Returns a smoothed, hysteresis-locked gesture prediction.
+ * Requires strong majority to switch away from the current gesture,
+ * completely preventing rapid toggling between ambiguous hand shapes.
  */
 function smoothGesture(gestureId, confidence) {
   gestureBuffer.push({ gestureId, confidence });
   if (gestureBuffer.length > SMOOTH_WINDOW) gestureBuffer.shift();
+
+  if (gestureBuffer.length < 3) {
+    return { gestureId: null, confidence: 0 };
+  }
 
   // Count occurrences
   const counts = {};
@@ -49,24 +55,45 @@ function smoothGesture(gestureId, confidence) {
     }
   }
 
-  // Find the dominant gesture
-  let best = null;
-  let bestCount = 0;
+  // Find candidate with most votes
+  let candidate = null;
+  let candidateCount = 0;
   for (const [id, count] of Object.entries(counts)) {
-    if (count > bestCount) {
-      best = id;
-      bestCount = count;
+    if (count > candidateCount) {
+      candidate = id;
+      candidateCount = count;
     }
   }
 
-  // Average confidence for the dominant gesture
-  if (best) {
-    const matching = gestureBuffer.filter((e) => e.gestureId === best);
-    const avgConf = matching.reduce((s, e) => s + e.confidence, 0) / matching.length;
-    // Only return if the gesture appears in at least 60% of the buffer
-    if (bestCount / gestureBuffer.length >= 0.6) {
-      return { gestureId: best, confidence: avgConf };
+  const total = gestureBuffer.length;
+
+  // ── Hysteresis stability lock ─────────────────────────
+  if (currentLockedGesture && counts[currentLockedGesture]) {
+    const lockedShare = counts[currentLockedGesture] / total;
+    const candidateShare = candidateCount / total;
+
+    // Switching requires solid consensus (>= 60%) to dethrone current gesture
+    if (candidate !== currentLockedGesture && candidateShare >= 0.60) {
+      currentLockedGesture = candidate;
+    } else if (lockedShare >= 0.35) {
+      candidate = currentLockedGesture;
+    } else if (candidateShare >= 0.55) {
+      currentLockedGesture = candidate;
+    } else {
+      currentLockedGesture = null;
+      candidate = null;
     }
+  } else if (candidate && (candidateCount / total) >= 0.55) {
+    currentLockedGesture = candidate;
+  } else {
+    currentLockedGesture = null;
+    candidate = null;
+  }
+
+  if (candidate) {
+    const matching = gestureBuffer.filter((e) => e.gestureId === candidate);
+    const avgConf = matching.reduce((s, e) => s + e.confidence, 0) / matching.length;
+    return { gestureId: candidate, confidence: avgConf };
   }
 
   return { gestureId: null, confidence: 0 };
@@ -92,8 +119,9 @@ function onHandResults(results) {
     // No hand detected
     ui.showNoGesture();
     tts.onNoGesture();
-    // Clear smoothing buffer
+    // Clear smoothing buffer and locked gesture
     gestureBuffer.length = 0;
+    currentLockedGesture = null;
     return;
   }
 
