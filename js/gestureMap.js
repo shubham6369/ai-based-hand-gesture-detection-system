@@ -24,7 +24,7 @@ export const GESTURE_MAP = {
   },
   ok_sign: {
     name: "OK Sign",
-    meaning: "Okay",
+    meaning: "Good",
     emoji: "👌",
   },
   open_palm: {

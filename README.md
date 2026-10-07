@@ -13,7 +13,7 @@ Built with **MediaPipe Hands** for hand landmark detection and custom JavaScript
 | 1 | 👍 Thumbs Up | "Okay" |
 | 2 | 👎 Thumbs Down | "No" |
 | 3 | ✌️ Peace / V Sign | "Victory" |
-| 4 | 👌 OK Sign | "Okay" |
+| 4 | 👌 OK Sign | "Good" |
 | 5 | ✋ Open Palm | "Stop" |
 | 6 | 👋 Waving Hand | "Hello" |
 | 7 | 🤙 Call Me | "Call Me" |
