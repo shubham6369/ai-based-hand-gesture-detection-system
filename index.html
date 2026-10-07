@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hand Gesture Recognition – Real-Time AI</title>
+  <meta name="description" content="Real-time hand gesture recognition using MediaPipe Hands with text-to-speech output. Recognizes 10 everyday gestures from your camera." />
+
+  <!-- Google Fonts – Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+  <!-- App stylesheet -->
+  <link rel="stylesheet" href="css/styles.css" />
+
+  <!--
+    MediaPipe Hands + dependencies.
+    Loaded as global scripts because MediaPipe's WASM build expects
+    global access to the Hands constructor.
+  -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+  <!-- ═══ Header ═══════════════════════════════════════ -->
+  <header class="header">
+    <h1>✋ Gesture AI</h1>
+    <button id="theme-toggle" class="theme-btn" aria-label="Toggle theme" title="Toggle dark / light theme">🌓</button>
+  </header>
+
+  <!-- ═══ Main Content ═════════════════════════════════ -->
+  <main class="container">
+    <div class="app-layout">
+
+      <!-- Left / Main Column: Camera View, Results, & Controls -->
+      <div class="main-column">
+        <!-- Camera viewport -->
+        <section class="camera-wrapper" aria-label="Camera preview">
+          <video id="camera-video" autoplay playsinline muted></video>
+          <canvas id="hand-canvas"></canvas>
+          <div class="camera-status waiting">
+            <span class="status-dot"></span>
+            <span id="status-text" class="status-text waiting">Initialising…</span>
+          </div>
+          <!-- Live corner gesture badge inside camera preview -->
+          <div id="camera-badge" class="camera-badge" aria-hidden="true">
+            <span id="badge-emoji" class="badge-emoji">🖐️</span>
+            <span id="badge-meaning" class="badge-meaning">No gesture</span>
+          </div>
+        </section>
+
+        <!-- Detection result card -->
+        <section class="result-card" aria-live="polite">
+          <div id="gesture-emoji" class="gesture-emoji">🖐️</div>
+          <div id="gesture-name" class="gesture-name">Loading model…</div>
+          <div id="gesture-meaning" class="gesture-meaning"></div>
+
+          <!-- Confidence -->
+          <div class="confidence-wrapper">
+            <span id="confidence-value" class="confidence-label">Confidence: --</span>
+            <div class="confidence-track">
+              <div id="confidence-bar" class="confidence-bar"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Controls -->
+        <section class="controls">
+          <button id="camera-btn" class="btn primary" aria-label="Start or stop camera">
+            <span class="btn-icon">📷</span>
+            <span id="camera-btn-text">Start Camera</span>
+          </button>
+          <button id="flip-btn" class="btn" aria-label="Switch camera">
+            <span class="btn-icon">🔄</span>
+            <span>Flip</span>
+          </button>
+          <button id="repeat-btn" class="btn" aria-label="Repeat last spoken gesture">
+            <span class="btn-icon">🔊</span>
+            <span>Repeat</span>
+          </button>
+        </section>
+      </div>
+
+      <!-- Right Column: Supported Gestures (placed directly beside the camera image) -->
+      <aside class="sidebar-column">
+        <section class="reference-section" aria-label="Supported gestures guide">
+          <div class="reference-header">
+            <div>
+              <h2 class="reference-title">Supported Gestures</h2>
+              <p class="reference-subtitle">Recognized in real time</p>
+            </div>
+            <span class="reference-pill">9 Total</span>
+          </div>
+          <div class="gesture-grid">
+            <div class="gesture-chip" data-gesture="thumbs_up" title="Click to hear pronunciation">
+              <div class="chip-emoji">👍</div>
+              <div class="chip-info">
+                <div class="chip-name">Thumbs Up</div>
+                <div class="chip-meaning">Okay</div>
+              </div>
+            </div>
+            <div class="gesture-chip" data-gesture="thumbs_down" title="Click to hear pronunciation">
+              <div class="chip-emoji">👎</div>
+              <div class="chip-info">
+                <div class="chip-name">Thumbs Down</div>
+                <div class="chip-meaning">No</div>
+              </div>
+            </div>
+            <div class="gesture-chip" data-gesture="peace" title="Click to hear pronunciation">
+              <div class="chip-emoji">✌️</div>
+              <div class="chip-info">
+                <div class="chip-name">Peace / V Sign</div>
+                <div class="chip-meaning">Victory</div>
+              </div>
+            </div>
+            <div class="gesture-chip" data-gesture="ok_sign" title="Click to hear pronunciation">
+              <div class="chip-emoji">👌</div>
+              <div class="chip-info">
+                <div class="chip-name">OK Sign</div>
+                <div class="chip-meaning">Okay</div>
+              </div>
+            </div>
+            <div class="gesture-chip" data-gesture="open_palm" title="Click to hear pronunciation">
+              <div class="chip-emoji">✋</div>
+              <div class="chip-info">
+                <div class="chip-name">Open Palm</div>
+                <div class="chip-meaning">Stop</div>
+              </div>
+            </div>
+            <div class="gesture-chip" data-gesture="wave" title="Click to hear pronunciation">
+              <div class="chip-emoji">👋</div>
+              <div class="chip-info">
+                <div class="chip-name">Waving Hand</div>
+                <div class="chip-meaning">Hello</div>
+              </div>
+            </div>
+            <div class="gesture-chip" data-gesture="call_me" title="Click to hear pronunciation">
+              <div class="chip-emoji">🤙</div>
+              <div class="chip-info">
+                <div class="chip-name">Call Me</div>
+                <div class="chip-meaning">Call Me</div>
+              </div>
+            </div>
+            <div class="gesture-chip" data-gesture="one_finger" title="Click to hear pronunciation">
+              <div class="chip-emoji">☝️</div>
+              <div class="chip-info">
+                <div class="chip-name">One Finger Up</div>
+                <div class="chip-meaning">Wait</div>
+              </div>
+            </div>
+            <div class="gesture-chip" data-gesture="crossed_fingers" title="Click to hear pronunciation">
+              <div class="chip-emoji">🤞</div>
+              <div class="chip-info">
+                <div class="chip-name">Crossed Fingers</div>
+                <div class="chip-meaning">Good Luck</div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </aside>
+
+    </div>
+  </main>
+
+  <!-- ═══ App entry-point (ES module) ══════════════════ -->
+  <script type="module" src="js/app.js"></script>
+
+</body>
+</html>
